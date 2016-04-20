@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<title>BSP Tree Game</title>
+	<meta name="generator" content="BBEdit 10.5" />
+     <link type="text/css" href="resources/webgl-tutorials.css" rel="stylesheet" />
+     <style>
+     * {
+       box-sizing: border-box;
+     }
+     #ui {
+         width: 200px;
+     }
+     
+     .container {
+         position: relative;
+         overflow: none;
+     }
+
+     #text {
+         background-color: transparent;  /* needed because webgl-tutoraisl.css sets canvas bg color to white */
+         position: absolute;
+         left: 0px;
+         top: 0px;
+         z-index: 10;
+     }
+
+     </style>
+
+<!-- load matrix manipulation helper methods -->	
+<script type="text/javascript" src="glMatrix_util.js"></script>
+<script type="text/javascript" src="webgl-utils.js"></script>
+
+<!-- script files for the BSP Tree project -->
+<script type="text/javascript" src="segment.js"></script>
+<script type="text/javascript" src="testcube.js"></script>
+<script type="text/javascript" src="bsp_treeMANUAL.js"></script>
+
+<!-- define our shaders -->
+<script id="shader-fs" type="x-shader/x-fragment">
+    precision mediump float;
+
+    varying vec2 vTextureCoord;
+    varying vec3 vLightWeighting;
+    varying vec3 vLocalNormal;
+    varying vec3 vVertPos;
+    varying vec3 vColor;
+
+    uniform sampler2D uSampler;
+
+    void main(void) {
+        //vec4 tColor = texture2D(uSampler, vec2(vTextureCoord.s, vTextureCoord.t));
+        vec4 aColor = vec4(vColor, 1.0);
+
+        //Phong Shading
+        vec3 AmbientColor = vec3(0.1, 0.1, 0.1); //Black ambient light
+        vec3 DirectionalColor = vec3(0.9, 0.9, 0.9); //White directional light
+        vec3 LightingDirection = normalize(vec3(0.0, -0.2, 1.0)); //Light points slightly up, away from viewer like flashlight
+        vec3 SpecularColor = vec3(0.6, 0.6, 0.6); //Gray specular light
+        
+        float directionalLightWeighting = max(dot(vLocalNormal, LightingDirection), 0.0);
+        vec3 viewDir = normalize(-vVertPos);
+        vec3 halfDir = normalize(LightingDirection + viewDir);
+        float specAngle;
+        specAngle = max(dot(halfDir, vLocalNormal), 0.0);
+        float specular = pow(specAngle, 64.0);
+        vec3 LightWeighting = AmbientColor + (DirectionalColor * directionalLightWeighting) + (SpecularColor * specular);
+        
+        gl_FragColor = vec4(aColor.rgb*LightWeighting, aColor.a);
+    }
+</script>
+
+<script id="shader-vs" type="x-shader/x-vertex">
+    attribute vec3 aVertexPosition;
+    attribute vec3 aVertexNormal;
+    attribute vec2 aTextureCoord;
+    attribute vec3 aVertexColor;
+
+    uniform mat4 uMVMatrix;
+    uniform mat4 uPMatrix;
+    uniform mat3 uNMatrix;
+
+    varying vec2 vTextureCoord;
+    varying vec3 vLightWeighting;
+    varying vec3 vLocalNormal;
+    varying vec3 vVertPos;
+    varying vec3 vColor;
+
+    void main(void) {
+        gl_Position = uPMatrix * uMVMatrix * vec4(aVertexPosition, 1.0);
+        vTextureCoord = aTextureCoord;
+        vColor = aVertexColor;
+
+        vec3 transformedNormal = uNMatrix * normalize(aVertexNormal);
+        vLocalNormal = transformedNormal;
+        vec4 vertPos = uMVMatrix * vec4(aVertexPosition, 1.0);
+        vVertPos = vec3(vertPos) / vertPos[3];
+
+        /*vec3 AmbientColor = vec3(0.0, 0.0, 0.0); //Black ambient light
+        vec3 DirectionalColor = vec3(1.0, 0.0, 0.0); //Red directional light
+        vec3 LightingDirection = vec3(1.0, -1.0, -1.0); //Light points right, down, away from viewer
+        //Apparently, we want to use the negative of our lighting direction, where the light is coming from
+        LightingDirection = -1.0 * LightingDirection;
+        LightingDirection = normalize(LightingDirection);
+        float directionalLightWeighting = max(dot(transformedNormal, LightingDirection), 0.0);
+        //vLightWeighting = AmbientColor; //Putting a variable into a Varying automatically interpolates it
+        //WebGL's automatic interpolation makes it Gouraud shading
+        vec3 viewDir = normalize(-vVertPos);
+        vec3 halfDir = normalize(LightingDirection + viewDir);
+        float specAngle;
+        specAngle = max(dot(halfDir, vLocalNormal), 0.0);
+        float specular = pow(specAngle, 16.0);
+        vec3 SpecularColor = vec3(specular, specular, specular); //Specular Lighting
+        vLightWeighting = AmbientColor + (DirectionalColor * directionalLightWeighting) + SpecularColor;*/
+        vLightWeighting = vec3(1.0, 1.0, 1.0);
+        //Phong Shading computes lighting per fragment.  Vertex Shader just passes transformed and interpolated data.
+    }
+</script>
+
+	
+<script> <!-- define Javascript functions for drawing WebGL items -->
+
+var gl;
+var ctx;
+
+function initWebGLContext(aname) {
+  gl = null;
+  var canvas = document.getElementById(aname);
+  try {
+    // Try to grab the standard context. If it fails, fallback to experimental.
+    gl = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
+  }
+  catch(e) {}
+  
+  // If we don't have a GL context, give up now
+  if (!gl) {
+    alert("Unable to initialize WebGL. Your browser may not support it.");
+    gl = null;
+  }
+  gl.viewportWidth = canvas.width;
+  gl.viewportHeight = canvas.height;
+  return gl;
+}
+// define the function to initial WebGL and Setup Geometry Objects
+function initGLScene()
+{
+    // Initialize the WebGL Context - the gl engine for drawing things.
+    var gl = initWebGLContext("3DWebGL"); // The id of the Canvas Element
+        if (!gl) // if fails simply return
+     {
+          return;
+     }
+     // succeeded in initializing WebGL system
+     return gl;     
+}
+
+
+   function getShader(gl, id) {
+        var shaderScript = document.getElementById(id);
+        if (!shaderScript) {
+            return null;
+        }
+
+        var str = "";
+        var k = shaderScript.firstChild;
+        while (k) {
+            if (k.nodeType == 3) {
+                str += k.textContent;
+            }
+            k = k.nextSibling;
+        }
+
+        var shader;
+        if (shaderScript.type == "x-shader/x-fragment") {
+            shader = gl.createShader(gl.FRAGMENT_SHADER);
+        } else if (shaderScript.type == "x-shader/x-vertex") {
+            shader = gl.createShader(gl.VERTEX_SHADER);
+        } else {
+            return null;
+        }
+
+        gl.shaderSource(shader, str);
+        gl.compileShader(shader);
+
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+            alert(gl.getShaderInfoLog(shader));
+            return null;
+        }
+
+        return shader;
+    }
+
+
+    var shaderProgram;
+
+    function initShaders() {
+        var fragmentShader = getShader(gl, "shader-fs");
+        var vertexShader = getShader(gl, "shader-vs");
+
+        shaderProgram = gl.createProgram();
+        gl.attachShader(shaderProgram, vertexShader);
+        gl.attachShader(shaderProgram, fragmentShader);
+        gl.linkProgram(shaderProgram);
+
+        if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+            alert("Could not initialise shaders");
+        }
+
+        gl.useProgram(shaderProgram);
+
+        shaderProgram.vertexPositionAttribute = gl.getAttribLocation(shaderProgram, "aVertexPosition");
+        gl.enableVertexAttribArray(shaderProgram.vertexPositionAttribute);
+
+        shaderProgram.vertexNormalAttribute = gl.getAttribLocation(shaderProgram, "aVertexNormal");
+        gl.enableVertexAttribArray(shaderProgram.vertexNormalAttribute);
+
+        shaderProgram.textureCoordAttribute = gl.getAttribLocation(shaderProgram, "aTextureCoord");
+        gl.enableVertexAttribArray(shaderProgram.textureCoordAttribute);
+
+        shaderProgram.vertexColorAttribute = gl.getAttribLocation(shaderProgram, "aVertexColor");
+        gl.enableVertexAttribArray(shaderProgram.vertexColorAttribute);
+
+        shaderProgram.pMatrixUniform = gl.getUniformLocation(shaderProgram, "uPMatrix");
+        shaderProgram.mvMatrixUniform = gl.getUniformLocation(shaderProgram, "uMVMatrix");
+        shaderProgram.samplerUniform = gl.getUniformLocation(shaderProgram, "uSampler");
+        shaderProgram.tnMatrixUniform = gl.getUniformLocation(shaderProgram, "uNMatrix");
+    }
+
+var currentlyPressedKeys = {};
+
+  //keyboard handlers
+  function handleKeyDown(event) {
+    currentlyPressedKeys[event.keyCode] = true;
+  }
+
+  function handleKeyUp(event) {
+    currentlyPressedKeys[event.keyCode] = false;
+  }
+
+function degToRad(degrees) {
+    return degrees * Math.PI / 180;
+}
+
+
+// create our basic model and view matrix
+var mvMatrix = mat4.create();
+var mvMatrixStack = [];
+// create our projection matrix for projecting from 3D to 2D.
+var pMatrix = mat4.create();
+
+ function mvPushMatrix() {
+        var copy = mat4.create();
+        mat4.set(mvMatrix, copy);
+        mvMatrixStack.push(copy);
+    }
+
+    function mvPopMatrix() {
+        if (mvMatrixStack.length == 0) {
+            throw "Invalid popMatrix!";
+        }
+        mvMatrix = mvMatrixStack.pop();
+    }
+
+function setMatrixUniforms()
+{
+        gl.uniformMatrix4fv(shaderProgram.pMatrixUniform, false, pMatrix);
+        gl.uniformMatrix4fv(shaderProgram.mvMatrixUniform, false, mvMatrix);
+
+        var normalMatrix = mat3.create();
+        mat4.toInverseMat3(mvMatrix, normalMatrix);
+        mat3.transpose(normalMatrix);
+        gl.uniformMatrix3fv(shaderProgram.tnMatrixUniform, false, normalMatrix);
+}
+
+
+
+
+// create and initialize our geometry objects
+var mapVertexPositionBuffer;
+var mapVertexTextureCoordBuffer;
+var mapVertexIndexBuffer;
+var mapNormalBuffer;
+var mapVertexColorBuffer;
+
+function initGeometry()
+ {
+        mapVertexPositionBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, mapVertexPositionBuffer);
+        var vertices = getMapVertices(); //from map file
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+        mapVertexPositionBuffer.itemSize = 3;
+        mapVertexPositionBuffer.numItems = vertices.length/3;
+
+        mapVertexTextureCoordBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, mapVertexTextureCoordBuffer);
+        var textureCoords = getMapTextureCoords(); //from map file
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(textureCoords), gl.STATIC_DRAW);
+        mapVertexTextureCoordBuffer.itemSize = 2;
+        mapVertexTextureCoordBuffer.numItems = textureCoords.length/2;
+
+        mapNormalBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, mapNormalBuffer);
+        var nvertices = getMapNormals(); //from map file
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(nvertices), gl.STATIC_DRAW);
+        mapNormalBuffer.itemSize = 3;
+        mapNormalBuffer.numItems = nvertices.length/3;
+
+        mapVertexColorBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, mapVertexColorBuffer);
+        var cvertices = getMapColors(); //from map file
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(cvertices), gl.STATIC_DRAW);
+        mapVertexColorBuffer.itemSize = 3;
+        mapVertexColorBuffer.numItems = cvertices.length/3;
+
+
+        mapVertexIndexBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mapVertexIndexBuffer);
+        var VertexIndices = getMapVertexIndices(); //from map file
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(VertexIndices), gl.STATIC_DRAW);
+        mapVertexIndexBuffer.itemSize = 1;
+        mapVertexIndexBuffer.numItems = VertexIndices.length;
+    }
+
+var getMapVertices = function() {
+  var vertices = [
+    //The first two squares are the floor and ceiling
+    // Floor
+    mapMinX, mapFloorHeight, mapMaxZ,
+    mapMaxX, mapFloorHeight, mapMaxZ,
+    mapMaxX, mapFloorHeight, mapMinZ,
+    mapMinX, mapFloorHeight, mapMinZ,
+
+    // Ceiling
+    mapMinX, mapCeilingHeight, mapMinZ,
+    mapMaxX, mapCeilingHeight, mapMinZ,
+    mapMaxX, mapCeilingHeight, mapMaxZ,
+    mapMinX, mapCeilingHeight, mapMaxZ,
+  ];
+  for (i=0; i<(segList.length); i++) {
+    vertices[(i+2)*12 + 0] = segList[i].pointA[0];
+    vertices[(i+2)*12 + 1] = mapFloorHeight;
+    vertices[(i+2)*12 + 2] = segList[i].pointA[1];
+
+    vertices[(i+2)*12 + 3] = segList[i].pointB[0];
+    vertices[(i+2)*12 + 4] = mapFloorHeight;
+    vertices[(i+2)*12 + 5] = segList[i].pointB[1];
+
+    vertices[(i+2)*12 + 6] = segList[i].pointB[0];
+    vertices[(i+2)*12 + 7] = mapCeilingHeight;
+    vertices[(i+2)*12 + 8] = segList[i].pointB[1];
+
+    vertices[(i+2)*12 + 9] = segList[i].pointA[0];
+    vertices[(i+2)*12 + 10] = mapCeilingHeight;
+    vertices[(i+2)*12 + 11] = segList[i].pointA[1];
+  }
+  return vertices
+}
+
+var getMapTextureCoords = function() {
+  var textureCoords = [
+    // Floor
+    0.0, 0.0,
+    1.0, 0.0,
+    1.0, 1.0,
+    0.0, 1.0,
+
+    // Ceiling
+    0.0, 0.0,
+    1.0, 0.0,
+    1.0, 1.0,
+    0.0, 1.0,
+  ];
+  for (i=0; i<(segList.length); i++) {
+    textureCoords[(i+2)*8 + 0] = 0.0;
+    textureCoords[(i+2)*8 + 1] = 0.0;
+
+    textureCoords[(i+2)*8 + 2] = 1.0;
+    textureCoords[(i+2)*8 + 3] = 0.0;
+
+    textureCoords[(i+2)*8 + 4] = 1.0;
+    textureCoords[(i+2)*8 + 5] = 1.0;
+
+    textureCoords[(i+2)*8 + 6] = 0.0;
+    textureCoords[(i+2)*8 + 7] = 1.0;
+  }
+  return textureCoords;
+}
+
+var getMapNormals = function() {
+  var nvertices = [
+    //The first two squares are the floor and ceiling
+    // Floor
+    0.0, 1.0, 0.0,
+    0.0, 1.0, 0.0,
+    0.0, 1.0, 0.0,
+    0.0, 1.0, 0.0,
+
+    // Ceiling
+    0.0, -1.0, 0.0,
+    0.0, -1.0, 0.0,
+    0.0, -1.0, 0.0,
+    0.0, -1.0, 0.0,
+  ];
+  var norm = vec3.create();
+  for (i=0; i<(segList.length); i++) {
+    norm = segList[i].getNormal();
+    nvertices[(i+2)*12 + 0] = norm[0];
+    nvertices[(i+2)*12 + 1] = norm[1];
+    nvertices[(i+2)*12 + 2] = norm[2];
+
+    nvertices[(i+2)*12 + 3] = norm[0];
+    nvertices[(i+2)*12 + 4] = norm[1];
+    nvertices[(i+2)*12 + 5] = norm[2];
+
+    nvertices[(i+2)*12 + 6] = norm[0];
+    nvertices[(i+2)*12 + 7] = norm[1];
+    nvertices[(i+2)*12 + 8] = norm[2];
+
+    nvertices[(i+2)*12 + 9] = norm[0];
+    nvertices[(i+2)*12 + 10] = norm[1];
+    nvertices[(i+2)*12 + 11] = norm[2];
+  }
+  return nvertices
+}
+
+var getMapColors = function() {
+  var cvertices = [
+    //The first two squares are the floor and ceiling
+    // Floor
+    mapFloorColor[0], mapFloorColor[1], mapFloorColor[2],
+    mapFloorColor[0], mapFloorColor[1], mapFloorColor[2],
+    mapFloorColor[0], mapFloorColor[1], mapFloorColor[2],
+    mapFloorColor[0], mapFloorColor[1], mapFloorColor[2],
+
+    // Ceiling
+    mapCeilingColor[0], mapCeilingColor[1], mapCeilingColor[2],
+    mapCeilingColor[0], mapCeilingColor[1], mapCeilingColor[2],
+    mapCeilingColor[0], mapCeilingColor[1], mapCeilingColor[2],
+    mapCeilingColor[0], mapCeilingColor[1], mapCeilingColor[2],
+  ];
+  for (i=0; i<(segList.length); i++) {
+    cvertices[(i+2)*12 + 0] = segList[i].color[0];
+    cvertices[(i+2)*12 + 1] = segList[i].color[1];
+    cvertices[(i+2)*12 + 2] = segList[i].color[2];
+
+    cvertices[(i+2)*12 + 3] = segList[i].color[0];
+    cvertices[(i+2)*12 + 4] = segList[i].color[1];
+    cvertices[(i+2)*12 + 5] = segList[i].color[2];
+
+    cvertices[(i+2)*12 + 6] = segList[i].color[0];
+    cvertices[(i+2)*12 + 7] = segList[i].color[1];
+    cvertices[(i+2)*12 + 8] = segList[i].color[2];
+
+    cvertices[(i+2)*12 + 9] = segList[i].color[0];
+    cvertices[(i+2)*12 + 10] = segList[i].color[1];
+    cvertices[(i+2)*12 + 11] = segList[i].color[2];
+  }
+  return cvertices
+}
+
+var getMapVertexIndices = function() {
+  var VertexIndices = [
+    0, 1, 2,      2, 3, 0,    // Floor
+    4, 5, 6,      6, 7, 4,    // Ceiling
+  ];
+  for (i=0; i<(segList.length); i++) {
+    VertexIndices[(i+2)*6 + 0] = (i+2)*4 + 0;
+    VertexIndices[(i+2)*6 + 1] = (i+2)*4 + 1;
+    VertexIndices[(i+2)*6 + 2] = (i+2)*4 + 2;
+
+    VertexIndices[(i+2)*6 + 3] = (i+2)*4 + 2;
+    VertexIndices[(i+2)*6 + 4] = (i+2)*4 + 3;
+    VertexIndices[(i+2)*6 + 5] = (i+2)*4 + 0;
+  }
+  return VertexIndices
+}
+
+
+// Initialize our texture data and prepare it for rendering
+var exTexture;
+function initTextures()
+{
+    exTexture = gl.createTexture();
+    exTexture.image = new Image();
+    exTexture.image.onload = function() {
+      handleLoadedTexture(exTexture)
+    }
+
+    exTexture.image.src = "box.png";
+  }
+
+function handleLoadedTexture(texture)
+{
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, texture.image);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+  }
+
+//Initialize everything for starting up a simple webGL application
+function startHelloWebGL()
+{
+   // attach 'Handler' functions to handle events generated by the canvas.
+   // for when the browser is resized or closed.
+
+   // first initialize webgl components 
+   gl = initGLScene();
+
+   // look up the text canvas.
+   var textCanvas = document.getElementById("text");
+   // make a 2D context for it
+   ctx = textCanvas.getContext("2d");
+   
+   // now build basic geometry objects.
+   initShaders();
+   //We need to call setMap() then buildTree() before initGeometry() as this sets up the segments
+   setMap();
+   buildTree();
+   initGeometry();
+   initTextures();
+   
+   gl.clearColor(0.4,0.4,0.4,1.0);
+   //gl.enable(gl.DEPTH_TEST); //Disable built-in depth check to demonstrate BSP Tree's ordering
+   //Backface culling
+   //gl.enable(gl.CULL_FACE);
+   //gl.cullFace(gl.BACK);
+
+   //keyboard handlers
+   document.onkeydown = handleKeyDown;
+   document.onkeyup = handleKeyUp;
+
+   // Draw the Scene
+   Frames();
+   // If doing an animation need to add code to rotate our geometry
+   
+}
+
+// This function draws a basic webGL scene
+// first it clears the framebuffer.
+// then we define our View positions for our camera using WebGL matrices.
+// OpenGL has convenience methods for this such as glPerspective().
+// finally we call the gl draw methods to draw our defined geometry objects.
+var fps = 0;
+var pos = mapStartPos;
+var dir = mapStartDir;
+var testdot = 0.0;
+var viewMatrix = mat4.create();
+var backFaceCulling = 0; //set to 0 to allow back-face drawing
+
+    function drawScene() {
+        gl.viewport(0, 0, gl.viewportWidth, gl.viewportHeight);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+        mat4.perspective(45, gl.viewportWidth / gl.viewportHeight, 0.1, 100.0, pMatrix);
+
+        mat4.identity(mvMatrix);
+        genViewMatrix();
+        mat4.multiply(mvMatrix, viewMatrix);
+        //mat4.translate(mvMatrix, [0.0, 0.0, -5.0]);
+
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, mapVertexPositionBuffer);
+        gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, mapVertexPositionBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, mapNormalBuffer);
+        gl.vertexAttribPointer(shaderProgram.vertexNormalAttribute, mapNormalBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, mapVertexTextureCoordBuffer);
+        gl.vertexAttribPointer(shaderProgram.textureCoordAttribute, mapVertexTextureCoordBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, mapVertexColorBuffer);
+        gl.vertexAttribPointer(shaderProgram.vertexColorAttribute, mapVertexColorBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, exTexture);
+        gl.uniform1i(shaderProgram.samplerUniform, 0);
+
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mapVertexIndexBuffer);
+        setMatrixUniforms();
+        drawSquare(0); //Floor
+        drawSquare(1); //Ceiling
+        drawTree(treeRoot);
+        //gl.drawElements(gl.TRIANGLES, mapVertexIndexBuffer.numItems, gl.UNSIGNED_SHORT, 0);
+
+        //2D canvas
+        ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+        ctx.font = "16px sans-serif";
+        ctx.fillStyle = "white";
+        ctx.fillText("FPS: " + fps, 10, 20);
+
+        //ctx.fillText("Move Forward: " + moveForward, 10, 60);
+        //ctx.fillText("Strafe Right: " + moveRight, 10, 80);
+        //ctx.fillText("Turn Right: " + turnRight, 10, 100);
+
+        ctx.fillText("Angle: " + dir, 10, 60);
+        ctx.fillText("Position: " + pos[0].toFixed(3) + ", " + pos[2].toFixed(3), 10, 80);
+
+        testdot = segList[0].inFront([pos[0],pos[2]]);
+        ctx.fillText("Dot product: " + testdot.toFixed(3), 10, 120);
+    }
+
+  var OUTER_WALL = 0.2;
+
+  function genViewMatrix() {
+    mat4.identity(viewMatrix);
+
+    //turn, then compute facing direction
+    dir += 2 * turnRight;
+    if (dir < 0) {dir += 360;}
+    if (dir >= 360) {dir -= 360;}
+    var newRotationMatrix = mat4.create();
+    mat4.identity(newRotationMatrix);
+    mat4.rotate(newRotationMatrix, -degToRad(dir), [0.0, 1.0, 0.0]);
+    var dirVec = [0.0, 0.0, -1.0];
+    mat4.multiplyVec3(newRotationMatrix, dirVec);
+
+    //apply forward/backward movement using this direction
+    var move = vec3.create();
+    vec3.scale(dirVec, (0.1 * moveForward), move);
+    vec3.add(pos, move);
+
+    //apply left/right strafing using same rotation on a vector to the right
+    var rightVec = [1.0, 0.0, 0.0];
+    mat4.multiplyVec3(newRotationMatrix, rightVec);
+    vec3.scale(rightVec, (0.1 * moveRight), move);
+    vec3.add(pos, move);
+
+    //keep pos in bounds defined by map
+    if (pos[0] < mapMinX + OUTER_WALL) {pos[0] = mapMinX + OUTER_WALL;}
+    if (pos[0] > mapMaxX - OUTER_WALL) {pos[0] = mapMaxX - OUTER_WALL;}
+    if (pos[2] < mapMinZ + OUTER_WALL) {pos[2] = mapMinZ + OUTER_WALL;}
+    if (pos[2] > mapMaxZ - OUTER_WALL) {pos[2] = mapMaxZ - OUTER_WALL;}
+
+    //find point ahead, and look at it to make viewMatrix
+    var look = vec3.create();
+    vec3.add(pos, dirVec, look);
+    mat4.lookAt(pos, look, [0.0, 1.0, 0.0], viewMatrix);
+  }
+
+  function drawSquare(i) {
+    gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, (i*6)*Uint16Array.BYTES_PER_ELEMENT);
+  }
+
+  function drawSegment(i) {
+    gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, (i+2)*6*Uint16Array.BYTES_PER_ELEMENT);
+  }
+
+function drawTree(node) {
+  if (node == -1) {return;}
+  var current = nodeList[node];
+  var dist = segList[current.s].inFront([pos[0],pos[2]]);
+  if (dist > 0) {
+    drawTree(current.r);
+    drawSegment(current.s);
+    drawTree(current.l);
+  } else {
+    drawTree(current.l);
+    if (backFaceCulling == 0) {drawSegment(current.s);} //skip this if back-face culling
+    drawTree(current.r);
+  }
+}
+
+    var lastTime = 0;
+    var elapsed = 0;
+    var frameCount = 0;
+
+    function animate() {
+        var timeNow = new Date().getTime();
+        frameCount += 1;
+        if (lastTime != 0) {
+            elapsed += timeNow - lastTime;
+        }
+        lastTime = timeNow;
+        if (elapsed >= 1000) {
+            fps = frameCount;
+            frameCount = 0;
+            elapsed -= 1000;
+        }
+    }
+
+
+    function Frames() {
+        requestAnimFrame(Frames);
+        handleKeys();
+        drawScene();
+        animate();
+    }
+
+
+var moveForward = 0;
+var moveRight = 0;
+var turnRight = 0;
+
+  function handleKeys() {
+    moveForward = 0;
+    if (currentlyPressedKeys[87]) { // W
+      moveForward += 1;
+    }
+    if (currentlyPressedKeys[38]) { // Up Cursor
+      moveForward += 1;
+    }
+    if (currentlyPressedKeys[83]) { // S
+      moveForward -= 1;
+    }
+    if (currentlyPressedKeys[40]) { // Down Cursor
+      moveForward -= 1;
+    }
+    moveForward = Math.max(-1, Math.min(1, moveForward));
+    moveRight = 0;
+    if (currentlyPressedKeys[68]) { // D
+      moveRight += 1;
+    }
+    if (currentlyPressedKeys[65]) { // A
+      moveRight -= 1;
+    }
+    turnRight = 0;
+    if (currentlyPressedKeys[39]) { // Right Cursor
+      turnRight += 1;
+    }
+    if (currentlyPressedKeys[37]) { // Left Cursor
+      turnRight -= 1;
+    }
+  }
+
+
+
+</script>
+
+</head>
+
+<!-- declare the "body" of the HTML document-->
+<!-- the onload attribute specifies a javascript function to execute when the body tag is loaded into the browser -->
+
+<body onload="startHelloWebGL()">
+<h1>DOOM Game</h1>
+<h4>W/S or Up/Down to move forward or backward.  A/D to strafe.  Left/Right to turn.</h4>
+
+<!-- embed the HTML5 Canvas Drawing object on the page.-->
+<!-- Name the canvas 'hellowebgl' for the javascript code. -->
+<!-- <canvas id="hellowebgl" width=640 height=480>
+If you're seeing this your web browser doesn't support the &lt;canvas>&gt; element. Ouch!
+</canvas>
+<canvas id="text" width=640 height=480>
+If you're seeing this your web browser doesn't support the &lt;canvas>&gt; element. Ouch!
+</canvas> -->
+<div class="container">
+<canvas id="3DWebGL" width="640" height="480"></canvas>
+<canvas id="text" width="640" height="480"></canvas>
+</div>
+
+</body>
+</html>
